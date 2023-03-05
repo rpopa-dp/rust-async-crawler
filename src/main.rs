@@ -3,16 +3,7 @@ use futures::{self, executor, StreamExt, SinkExt};
 use async_std::fs::File;
 use async_std::io::ReadExt;
 
-// -----------------------------------------------------------------------------
-#[derive(Debug)]
-struct Request {
-  path: String,
-}
-
-#[derive(Debug)]
-struct Response {
-  content: Vec<u8>,
-}
+mod fs;
 
 #[derive(Debug)]
 struct Item {
@@ -22,14 +13,14 @@ struct Item {
 
 // -----------------------------------------------------------------------------
 struct SeedRequests {
-  requests_tx: UnboundedSender<Request>,
+  requests_tx: UnboundedSender<fs::Request>,
 }
 
 impl SeedRequests {
   async fn run(&mut self) {
-    let request = Request {
-      path: format!("fixtures/1.txt"),
-    };
+    let request = fs::request()
+      .with_path("fixtures/1.txt".into())
+      .build();
 
     self.requests_tx.send(request).await.unwrap();
   }
@@ -37,8 +28,8 @@ impl SeedRequests {
 
 // -----------------------------------------------------------------------------
 struct FetchResources {
-  requests_rx: UnboundedReceiver<Request>,
-  responses_tx: UnboundedSender<Response>,
+  requests_rx: UnboundedReceiver<fs::Request>,
+  responses_tx: UnboundedSender<fs::Response>,
 }
 
 impl FetchResources {
@@ -52,7 +43,9 @@ impl FetchResources {
 
       file.read_to_end(&mut content).await.unwrap();
 
-      let response = Response { content };
+      let response = fs::response()
+        .with_content(content)
+        .build();
 
       self.responses_tx.send(response).await.unwrap();
     }
@@ -61,8 +54,8 @@ impl FetchResources {
 
 // -----------------------------------------------------------------------------
 struct ExtractItems {
-  responses_rx: UnboundedReceiver<Response>,
-  requests_tx: UnboundedSender<Request>,
+  responses_rx: UnboundedReceiver<fs::Response>,
+  requests_tx: UnboundedSender<fs::Request>,
   items_tx: UnboundedSender<Item>,
 }
 
@@ -91,9 +84,10 @@ impl ExtractItems {
       self.items_tx.send(item).await.unwrap();
 
       if next_page != 0 {
-        let request = Request {
-          path: format!("fixtures/{next_page}.txt"),
-        };
+        let request = fs::request()
+          .with_path(format!("fixtures/{next_page}.txt"))
+          .build();
+
         self.requests_tx.send(request).await.unwrap();
       }
     }
@@ -116,8 +110,8 @@ impl DumpItems {
 
 // -----------------------------------------------------------------------------
 async fn async_main() {
-  let (requests_tx, requests_rx) = mpsc::unbounded::<Request>();
-  let (responses_tx, responses_rx) = mpsc::unbounded::<Response>();
+  let (requests_tx, requests_rx) = mpsc::unbounded::<fs::Request>();
+  let (responses_tx, responses_rx) = mpsc::unbounded::<fs::Response>();
   let (items_tx, items_rx) = mpsc::unbounded::<Item>();
 
   let mut seed_requests = SeedRequests {
