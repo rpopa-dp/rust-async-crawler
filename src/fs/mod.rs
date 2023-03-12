@@ -1,3 +1,10 @@
+use async_std::fs::File;
+use async_std::io::ReadExt;
+use futures::channel::mpsc::{UnboundedSender, UnboundedReceiver};
+use futures::{StreamExt, SinkExt};
+
+use crate::result::Result;
+
 #[derive(Debug)]
 pub struct Request {
   pub path: String,
@@ -5,12 +12,6 @@ pub struct Request {
 
 pub struct RequestBuilder {
   path: Option<String>,
-}
-
-pub fn request() -> RequestBuilder {
-  RequestBuilder {
-    path: None,
-  }
 }
 
 impl RequestBuilder {
@@ -26,6 +27,12 @@ impl RequestBuilder {
   }
 }
 
+pub fn request() -> RequestBuilder {
+  RequestBuilder {
+    path: None,
+  }
+}
+
 // -----------------------------------------------------------------------------
 #[derive(Debug)]
 pub struct Response {
@@ -34,12 +41,6 @@ pub struct Response {
 
 pub struct ResponseBuilder {
   content: Option<Vec<u8>>,
-}
-
-pub fn response() -> ResponseBuilder {
-  ResponseBuilder {
-    content: None,
-  }
 }
 
 impl ResponseBuilder {
@@ -52,5 +53,44 @@ impl ResponseBuilder {
     Response {
       content: self.content.expect("content is required"),
     }
+  }
+}
+
+pub fn response() -> ResponseBuilder {
+  ResponseBuilder {
+    content: None,
+  }
+}
+
+// -----------------------------------------------------------------------------
+pub struct FetchResources {
+  pub requests_rx: UnboundedReceiver<Request>,
+  pub responses_tx: UnboundedSender<Response>,
+}
+
+impl FetchResources {
+  pub async fn run(&mut self) {
+    while let Some(request) = self.requests_rx.next().await {
+      println!("------------");
+      println!("{request:?}");
+
+      match self.read_file(&request).await {
+        Err(error) => eprintln!("ERROR: {error}"),
+        Ok(response) => self.responses_tx.send(response).await.unwrap(),
+      }
+    }
+  }
+
+  async fn read_file(&self, request: &Request) -> Result<Response> {
+    let mut file = File::open(&request.path).await?;
+    let mut content = Vec::new();
+
+    file.read_to_end(&mut content).await?;
+
+    let response = response()
+      .with_content(content)
+      .build();
+
+    Ok(response)
   }
 }

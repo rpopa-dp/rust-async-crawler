@@ -1,12 +1,9 @@
-use futures::channel::mpsc::{self, UnboundedSender, UnboundedReceiver};
-use std::error::Error;
-use futures::{self, executor, StreamExt, SinkExt};
-use async_std::fs::File;
-use async_std::io::ReadExt;
-
 mod fs;
+mod result;
 
-type Result<T> = std::result::Result<T, Box<dyn Error>>;
+use futures::channel::mpsc::{self, UnboundedSender, UnboundedReceiver};
+use futures::{self, executor, StreamExt, SinkExt};
+use crate::result::Result;
 
 #[derive(Debug)]
 struct Item {
@@ -26,39 +23,6 @@ impl SeedRequests {
       .build();
 
     self.requests_tx.send(request).await.unwrap();
-  }
-}
-
-// -----------------------------------------------------------------------------
-struct FetchResources {
-  requests_rx: UnboundedReceiver<fs::Request>,
-  responses_tx: UnboundedSender<fs::Response>,
-}
-
-impl FetchResources {
-  async fn run(&mut self) {
-    while let Some(request) = self.requests_rx.next().await {
-      println!("------------");
-      println!("{request:?}");
-
-      match self.read_file(&request).await {
-        Err(error) => eprintln!("ERROR: {error}"),
-        Ok(response) => self.responses_tx.send(response).await.unwrap(),
-      }
-    }
-  }
-
-  async fn read_file(&self, request: &fs::Request) -> Result<fs::Response> {
-    let mut file = File::open(&request.path).await?;
-    let mut content = Vec::new();
-
-    file.read_to_end(&mut content).await?;
-
-    let response = fs::response()
-      .with_content(content)
-      .build();
-
-    Ok(response)
   }
 }
 
@@ -158,7 +122,7 @@ async fn async_main() {
   let mut seed_requests = SeedRequests {
     requests_tx: requests_tx.clone(),
   };
-  let mut fetch_resources = FetchResources {
+  let mut fetch_resources = fs::FetchResources {
     requests_rx,
     responses_tx: responses_tx.clone(),
   };
