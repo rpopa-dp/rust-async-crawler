@@ -1,9 +1,12 @@
 use futures::channel::mpsc::{self, UnboundedSender, UnboundedReceiver};
+use std::error::Error;
 use futures::{self, executor, StreamExt, SinkExt};
 use async_std::fs::File;
 use async_std::io::ReadExt;
 
 mod fs;
+
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
 struct Item {
@@ -38,17 +41,24 @@ impl FetchResources {
       println!("------------");
       println!("{request:?}");
 
-      let mut file = File::open(request.path).await.unwrap();
-      let mut content = Vec::new();
-
-      file.read_to_end(&mut content).await.unwrap();
-
-      let response = fs::response()
-        .with_content(content)
-        .build();
-
-      self.responses_tx.send(response).await.unwrap();
+      match self.read_file(&request).await {
+        Err(error) => eprintln!("ERROR: {error}"),
+        Ok(response) => self.responses_tx.send(response).await.unwrap(),
+      }
     }
+  }
+
+  async fn read_file(&self, request: &fs::Request) -> Result<fs::Response> {
+    let mut file = File::open(&request.path).await?;
+    let mut content = Vec::new();
+
+    file.read_to_end(&mut content).await?;
+
+    let response = fs::response()
+      .with_content(content)
+      .build();
+
+    Ok(response)
   }
 }
 
@@ -65,31 +75,62 @@ impl ExtractItems {
       println!("------------");
       println!("{response:?}");
 
-      let slice = &response.content[..];
-      let pos = slice.iter().position(|&b| b == '\n' as u8).unwrap();
-      let name = std::str::from_utf8(&slice[..pos]).unwrap().to_string();
-
-      let slice = &slice[pos + 1..];
-      let pos = slice.iter().position(|&b| b == '\n' as u8).unwrap();
-      let year = std::str::from_utf8(&slice[..pos]).unwrap()
-        .parse::<i32>().unwrap();
-
-      let slice = &slice[pos + 1..];
-      let pos = slice.iter().position(|&b| b == '\n' as u8).unwrap();
-      let next_page = std::str::from_utf8(&slice[..pos]).unwrap()
-        .parse::<i32>().unwrap();
-
-      let item = Item { name, year };
-
-      self.items_tx.send(item).await.unwrap();
-
-      if next_page != 0 {
-        let request = fs::request()
-          .with_path(format!("fixtures/{next_page}.txt"))
-          .build();
-
-        self.requests_tx.send(request).await.unwrap();
+      match self.process_response(&response).await {
+        Err(error) => eprintln!("ERROR: {error}"),
+        Ok(_) => {},
       }
+    }
+  }
+
+  async fn process_response(&mut self, response: &fs::Response) -> Result<()> {
+    let lines = self.parse_lines(&response)?;
+    let item = self.parse_item(&lines)?;
+
+    self.items_tx.send(item).await?;
+
+    if let Some(request) = self.parse_request(&lines)? {
+      self.requests_tx.send(request).await?;
+    }
+
+    Ok(())
+  }
+
+  fn parse_lines(&self, response: &fs::Response) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    let mut slice = &response.content[..];
+
+    while slice.len() > 0 {
+      let pos = slice.iter()
+        .position(|&b| b == '\n' as u8)
+        .ok_or("could not parse line")?;
+      let line = std::str::from_utf8(&slice[..pos])?.to_string();
+
+      lines.push(line);
+      slice = &slice[pos + 1..];
+    }
+
+    Ok(lines)
+  }
+
+  fn parse_item(&self, lines: &Vec<String>) -> Result<Item> {
+    let name = lines[0].clone();
+    let year = lines[1].parse::<i32>()?;
+    let item = Item { name, year };
+
+    return Ok(item);
+  }
+
+  fn parse_request(&self, lines: &Vec<String>) -> Result<Option<fs::Request>> {
+    let next_page = lines[2].parse::<i32>()?;
+
+    if next_page == 0 {
+      Ok(None)
+    } else {
+      let request = fs::request()
+        .with_path(format!("fixtures/{next_page}.txt"))
+        .build();
+
+      Ok(Some(request))
     }
   }
 }
